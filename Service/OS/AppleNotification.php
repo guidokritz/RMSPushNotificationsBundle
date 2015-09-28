@@ -251,14 +251,16 @@ class AppleNotification implements OSNotificationServiceInterface, EventListener
         $fp = $this->getApnStream($apnURL);
         $response = (strlen($payload) === @fwrite($fp, $payload, strlen($payload)));
 
-        // Check if there is responsedata to read
-        $readStreams = array($fp);
-        $null = NULL;
-        $streamsReadyToRead = @stream_select($readStreams, $null, $null, 1, 0);
-        if ($streamsReadyToRead > 0) {
-            // Unpack error response data and set as the result
-            $response = @unpack("Ccommand/Cstatus/Nidentifier", fread($fp, 6));
-            $this->closeApnStream($apnURL);
+        if (!$response) {
+            // Check if there is responsedata to read
+            $readStreams = array($fp);
+            $null = NULL;
+            $streamsReadyToRead = @stream_select($readStreams, $null, $null, 1, 0);
+            if ($streamsReadyToRead > 0) {
+                // Unpack error response data and set as the result
+                $response = @unpack("Ccommand/Cstatus/Nidentifier", fread($fp, 6));
+                $this->closeApnStream($apnURL);
+            }
         }
 
         // Will contain true if writing succeeded and no error is returned yet
