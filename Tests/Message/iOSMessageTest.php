@@ -70,4 +70,20 @@ class iOSMessageTest extends \PHPUnit_Framework_TestCase
         $msg->setData(array("custom" => array("foo" => "bar")));
         $this->assertEquals($expected, $msg->getMessageBody());
     }
+    
+    public function testSetIdentifierIsSingleEntryInGCMArray()
+    {
+        $msg = new iOSMessage();
+        $msg->setDeviceIdentifier("foo");
+        $this->assertCount(1, $msg->getGCMIdentifiers());
+    }
+
+    public function testAddingGCMIdentifiers()
+    {
+        $msg = new iOSMessage();
+        $msg->addGCMIdentifier("foo");
+        $msg->addGCMIdentifier("bar");
+        $this->assertCount(2, $msg->getGCMIdentifiers());
+    }
+
 }

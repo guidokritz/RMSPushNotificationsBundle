@@ -2,6 +2,7 @@
 
 namespace RMS\PushNotificationsBundle\Service\OS;
 
+use RMS\PushNotificationsBundle\Exception\ApnStreamWriteErrorException;
 use RMS\PushNotificationsBundle\Exception\InvalidMessageTypeException,
     RMS\PushNotificationsBundle\Message\AppleMessage,
     RMS\PushNotificationsBundle\Message\MessageInterface,
@@ -165,16 +166,27 @@ class AppleNotification implements OSNotificationServiceInterface, EventListener
      */
     public function send(MessageInterface $message)
     {
-        if (!$message instanceof AppleMessage) {
-            throw new InvalidMessageTypeException(sprintf("Message type '%s' not supported by APN", get_class($message)));
-        }
-
         $apnURL = "ssl://gateway.push.apple.com:2195";
         if ($this->useSandbox) {
             $apnURL = "ssl://gateway.sandbox.push.apple.com:2195";
         }
 
-        $messageId = ++$this->lastMessageId;
+        $this->addMessage($message);
+
+        $errors = $this->sendMessages($this->lastMessageId, $apnURL);
+
+        return !$errors;
+    }
+
+    /**
+     * @param MessageInterface $message
+     */
+    protected function addMessage(MessageInterface $message)
+    {
+        if (!$message instanceof AppleMessage) {
+            throw new InvalidMessageTypeException(sprintf("Message type '%s' not supported by APN", get_class($message)));
+        }
+
 
         if ($message->isMdmMessage()) {
             if ($message->getToken() == '') {
@@ -185,14 +197,16 @@ class AppleNotification implements OSNotificationServiceInterface, EventListener
                 throw new InvalidMessageTypeException(sprintf("Message type '%s' is a MDM message but 'pushMagicToken' is missing", get_class($message)));
             }
 
+            $messageId = count($this->messages);
+
             $this->messages[$messageId] = $this->createMdmPayload($message->getToken(), $message->getPushMagicToken());
         } else {
-            $this->messages[$messageId] = $this->createPayload($messageId, $message->getExpiry(), $message->getDeviceIdentifier(), $message->getMessageBody());
+            foreach ($message->getGCMIdentifiers() as $identifier) {
+                $messageId = count($this->messages);
+
+                $this->messages[$messageId] = $this->createPayload($messageId, $message->getExpiry(), $identifier, $message->getMessageBody());
+            }
         }
-
-        $errors = $this->sendMessages($messageId, $apnURL);
-
-        return !$errors;
     }
 
     /**
@@ -207,43 +221,46 @@ class AppleNotification implements OSNotificationServiceInterface, EventListener
     protected function sendMessages($firstMessageId, $apnURL)
     {
         $errors = array();
+
         // Loop through all messages starting from the given ID
         for ($currentMessageId = $firstMessageId; $currentMessageId < count($this->messages); $currentMessageId++) {
             // Send the message
-            $result = $this->writeApnStream($apnURL, $this->messages[$currentMessageId]);
+            try {
+                $this->writeApnStream($apnURL, $this->messages[$currentMessageId]);
+            } catch (ApnStreamWriteErrorException $e) {
+                break;
+            }
+        }
 
-            $errors = array();
+        $this->lastMessageId = $currentMessageId;
 
-            // Check if there is an error result
-            if (is_array($result)) {
+        $result = $this->readApnStream($apnURL);
+        if (is_array($result)) {
+            // Close the apn stream in case of Shutdown status code.
+            if ($result['status'] === self::APNS_SHUTDOWN_CODE) {
+                $this->closeApnStream($apnURL);
+            }
 
-                // Close the apn stream in case of Shutdown status code.
-                if ($result['status'] === self::APNS_SHUTDOWN_CODE) {
-                    $this->closeApnStream($apnURL);
-                }
-
-                $this->responses[] = $result;
-                // Resend all messages that were sent after the failed message
-                $this->sendMessages($result['identifier']+1, $apnURL);
-                $errors[] = $result;
-                if ($this->logger) {
-                    $this->logger->err(json_encode($result));
-                }
-            } else {
-                $this->responses[] = true;
+            $this->responses[$result['identifier']] = $result;
+            // Resend all messages that were sent after the failed message
+            $this->sendMessages($result['identifier']+1, $apnURL);
+            $errors[] = $result;
+            if ($this->logger) {
+                $this->logger->err(json_encode($result));
             }
         }
 
         return $errors;
     }
 
+
     /**
      * Write data to the apn stream that is associated with the given apn URL
      *
-     * @param  string            $apnURL
-     * @param  string            $payload
-     * @throws \RuntimeException
-     * @return mixed
+     * @param  string $apnURL
+     * @param  string $payload
+     * @return boolean
+     * @throws ApnStreamWriteErrorException
      */
     protected function writeApnStream($apnURL, $payload)
     {
@@ -252,20 +269,36 @@ class AppleNotification implements OSNotificationServiceInterface, EventListener
         $response = (strlen($payload) === @fwrite($fp, $payload, strlen($payload)));
 
         if (!$response) {
-            // Check if there is responsedata to read
-            $readStreams = array($fp);
-            $null = NULL;
-            $streamsReadyToRead = @stream_select($readStreams, $null, $null, 1, 0);
-            if ($streamsReadyToRead > 0) {
-                // Unpack error response data and set as the result
-                $response = @unpack("Ccommand/Cstatus/Nidentifier", fread($fp, 6));
-                $this->closeApnStream($apnURL);
-            }
+            throw new ApnStreamWriteErrorException();
         }
 
-        // Will contain true if writing succeeded and no error is returned yet
+        // Will contain true if writing succeeded
         return $response;
     }
+
+
+    /**
+     * Read data from the apn stream
+     *
+     * @param string $apnURL
+     * @return array|null
+     */
+    protected function readApnStream($apnURL) {
+        // Check if there is response data to read
+        $fp = $this->getApnStream($apnURL);
+        $readStreams = array($fp);
+        $null = NULL;
+        $response = NULL;
+        $streamsReadyToRead = @stream_select($readStreams, $null, $null, 1, 0);
+        if ($streamsReadyToRead > 0) {
+            // Unpack error response data and set as the result
+            $response = @unpack("Ccommand/Cstatus/Nidentifier", fread($fp, 6));
+            $this->closeApnStream($apnURL);
+        }
+
+        return $response;
+    }
+
 
     /**
      * Get an apn stream associated with the given apn URL, create one if necessary

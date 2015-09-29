@@ -19,6 +19,14 @@ class AppleMessage implements MessageInterface
     protected $identifier = null;
 
     /**
+     * A collection of device identifiers that the message
+     * is intended for. GCM use only
+     *
+     * @var array
+     */
+    protected $allIdentifiers = array();
+
+    /**
      * The APS core body
      *
      * @var array
@@ -138,6 +146,35 @@ class AppleMessage implements MessageInterface
     public function setDeviceIdentifier($identifier)
     {
         $this->identifier = $identifier;
+        $this->allIdentifiers = array($identifier => $identifier);
+    }
+
+    /**
+     * Returns an array of device identifiers
+     * Not used in C2DM
+     *
+     * @return mixed
+     */
+    public function getGCMIdentifiers()
+    {
+        return array_values($this->allIdentifiers);
+    }
+
+    /**
+     * Adds a device identifier to the GCM list
+     * @param string $identifier
+     */
+    public function addGCMIdentifier($identifier)
+    {
+        $this->allIdentifiers[$identifier] = $identifier;
+    }
+
+    /**
+     * Sets the GCM list
+     * @param array $allIdentifiers
+     */
+    public function setAllIdentifiers($allIdentifiers) {
+        $this->allIdentifiers = array_combine($allIdentifiers, $allIdentifiers);
     }
 
     /**
